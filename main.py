@@ -2,30 +2,59 @@ import os
 import json
 import subprocess
 import time
+import re
+import shutil
+import unicodedata
 
 # BASE PATH = folder where this script is located
 BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
+
+# Desired output structure (spotdl template):
+# /{artist}/{album}/{track-number} - {title}.{output-ext}
+# (old: /{playlist-name}/{title}.{output-ext})
+OUTPUT_TEMPLATE = "{artist}/{album}/{track-number} - {title}.{output-ext}"
+
+# Audio extensions to consider
+AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".opus", ".ogg")
+
+
+def _norm(s: str) -> str:
+    # Normalizes unicode to reduce false "missing" with Japanese/accents
+    return unicodedata.normalize("NFKC", s).casefold().strip()
 
 
 # -------------------------------------------------
 # CLEAN SPOTIFY URL + EXTRACT PLAYLIST ID
 # -------------------------------------------------
-def extract_playlist_id(link):
-    clean = link.split("?")[0]  # removes ?si=..., &pi=..., anything after ?
-    if "playlist/" in clean:
-        return clean.split("playlist/")[1]
-    return clean
+def extract_spotify_id(link: str) -> str:
+    clean = link.split("?")[0].rstrip("/")
+
+    # Support /playlist/<id>, /album/<id>, /track/<id>
+    for kind in ("playlist", "album", "track"):
+        needle = f"{kind}/"
+        if needle in clean:
+            return clean.split(needle, 1)[1].split("/", 1)[0]
+
+    # Fallback: last path segment
+    return clean.split("/")[-1]
 
 
 def clean_spotify_url(url):
     return url.split("?")[0]  # consistently remove all params
 
 
+def safe_filename(name: str) -> str:
+    # Windows-safe filename (no <>:"/\|?* and no control chars)
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name[:180] or "spotify"
+
+
 # -------------------------------------------------
 # FETCH METADATA USING SPOTDL
 # -------------------------------------------------
 def fetch_metadata(playlist_url, playlist_id):
-    metadata_file = os.path.join(BASE_FOLDER, f"{playlist_id}.spotdl")
+    metadata_file = os.path.join(BASE_FOLDER, f"{safe_filename(playlist_id)}.spotdl")
 
     print("\nFetching playlist metadata…")
 
@@ -44,7 +73,6 @@ def fetch_metadata(playlist_url, playlist_id):
     return metadata_file
 
 
-
 # -------------------------------------------------
 # READ TRACKS FROM .spotdl FILE
 # -------------------------------------------------
@@ -56,13 +84,22 @@ def load_playlist(path):
 
     tracks = []
     for track in data:
-        title = track["name"].lower()
-        artist = track["artists"][0].lower()
+        title_l = _norm(track["name"])
+        artist_l = _norm(track["artists"][0])
+
+        album = track.get("album_name") or track.get("album") or "Unknown Album"
+        track_number = track.get("track_number") or track.get("track-number") or 0
+        try:
+            track_number = int(track_number)
+        except Exception:
+            track_number = 0
 
         tracks.append({
-            "raw": f"{title} {artist}",
+            "raw": f"{title_l} {artist_l}",
             "title": track["name"],
-            "artist": track["artists"][0]
+            "artist": track["artists"][0],
+            "album": album,
+            "track_number": track_number,
         })
 
     return playlist_name, tracks
@@ -73,35 +110,154 @@ def load_playlist(path):
 # -------------------------------------------------
 def get_local_tracks(folder):
     files = []
-    for f in os.listdir(folder):
-        if f.lower().endswith((".mp3", ".wav", ".m4a", ".flac")):
-            files.append(os.path.splitext(f)[0].lower())
+    for root, _, filenames in os.walk(folder):
+        for f in filenames:
+            if f.lower().endswith(AUDIO_EXTS):
+                files.append(os.path.splitext(f)[0].lower())
     return files
+
+
+def _safe_name(s: str) -> str:
+    s = s.strip()
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", s)
+    s = re.sub(r"\s+", " ", s)
+    s = _norm(s)
+    return s[:180].strip() or "Unknown"
+
+
+def _list_root_audio_files(folder):
+    files = []
+    for f in os.listdir(folder):
+        p = os.path.join(folder, f)
+        if os.path.isfile(p) and f.lower().endswith(AUDIO_EXTS):
+            files.append(p)
+    return files
+
+
+def _find_best_match_in_root(track, root_files):
+    title = _norm(track["title"])
+    artist = _norm(track["artist"])
+    raw = _norm(track["raw"])
+
+    best_fp = None
+    best_score = 0
+
+    for fp in root_files:
+        base = _norm(os.path.splitext(os.path.basename(fp))[0])
+        score = 0
+        if title and title in base:
+            score += 2
+        if artist and artist in base:
+            score += 2
+        if raw and raw in base:
+            score += 3
+
+        if score > best_score:
+            best_score = score
+            best_fp = fp
+
+    return best_fp if best_score > 0 else None
+
+
+def organize_root_tracks(playlist_folder, playlist_tracks):
+    root_files = _list_root_audio_files(playlist_folder)
+    if not root_files:
+        return
+
+    print(f"\nFound {len(root_files)} unorganized file(s) in playlist root. Organizing...")
+
+    moved = 0
+
+    for t in playlist_tracks:
+        match = _find_best_match_in_root(t, root_files)
+        if not match:
+            continue
+
+        ext = os.path.splitext(match)[1]
+
+        artist_dir = _safe_name(t["artist"])
+        album_dir = _safe_name(t["album"])
+
+        tn = t["track_number"]
+        tn_str = f"{tn:02d}" if tn > 0 else "00"
+
+        filename = _safe_name(f"{tn_str} - {t['title']}") + ext
+
+        dest_dir = os.path.join(playlist_folder, artist_dir, album_dir)
+        os.makedirs(dest_dir, exist_ok=True)
+
+        dest_path = os.path.join(dest_dir, filename)
+
+        if os.path.exists(dest_path):
+            root_files.remove(match)
+            continue
+
+        shutil.move(match, dest_path)
+        root_files.remove(match)
+        moved += 1
+        print(f" - {os.path.basename(match)} -> {dest_path}")
+
+    if root_files:
+        print("\nUnmatched root files:")
+        for fp in root_files:
+            print(f" - {os.path.basename(fp)}")
+
+    print(f"\nOrganized {moved} file(s).")
+
+
+def track_exists(track, playlist_folder):
+    artist_dir = _safe_name(track["artist"])
+    album_dir = _safe_name(track["album"])
+    base_dir = os.path.join(playlist_folder, artist_dir, album_dir)
+    if not os.path.isdir(base_dir):
+        return False
+
+    tn = track.get("track_number", 0) or 0
+    title_n = _norm(track["title"])
+
+    # Fast path: track-number prefix match in album folder
+    if tn > 0:
+        tn_str = f"{tn:02d}"
+        try:
+            for f in os.listdir(base_dir):
+                if f.lower().endswith(AUDIO_EXTS) and _norm(f).startswith(_norm(tn_str + " - ")):
+                    return True
+        except Exception:
+            pass
+
+    # Fallback: title match anywhere in filename within album folder
+    for root, _, files in os.walk(base_dir):
+        for f in files:
+            if f.lower().endswith(AUDIO_EXTS) and title_n in _norm(f):
+                return True
+
+    return False
 
 
 # -------------------------------------------------
 # DOWNLOAD SINGLE SONG (title + artist)
 # -------------------------------------------------
 def download_song(title, artist, folder):
-    print(f"\n⬇ Downloading: {title} – {artist}")
+    print(f"\nDownloading: {title} – {artist}")
+
+    output_path = os.path.join(folder, OUTPUT_TEMPLATE)
 
     subprocess.run([
         "spotdl",
         f"{title} {artist}",
         "--output",
-        folder
+        output_path
     ], shell=True)
 
 
 # -------------------------------------------------
 # SYNC PLAYLIST: FIND MISSING SONGS + DOWNLOAD
 # -------------------------------------------------
-def sync_playlist(local_tracks, playlist_tracks, folder):
+def sync_playlist(playlist_tracks, folder):
     missing = []
 
     for song in playlist_tracks:
-        found = any(song["raw"] in l or l in song["raw"] for l in local_tracks)
-        if not found:
+        if not track_exists(song, folder):
             missing.append(song)
 
     print("\n=== Missing Songs ===")
@@ -118,19 +274,20 @@ def sync_playlist(local_tracks, playlist_tracks, folder):
 if __name__ == "__main__":
     playlist_url = input("Paste Spotify playlist link: ").strip()
 
-    playlist_id = extract_playlist_id(playlist_url)
+    playlist_id = extract_spotify_id(playlist_url)
     metadata_file = fetch_metadata(playlist_url, playlist_id)
 
     playlist_name, playlist_tracks = load_playlist(metadata_file)
 
-    playlist_folder = os.path.join(BASE_FOLDER, playlist_name)
+    playlist_folder = os.path.join(BASE_FOLDER, safe_filename(playlist_name))
 
     if not os.path.exists(playlist_folder):
         print(f"\nCreating folder: {playlist_folder}")
         os.makedirs(playlist_folder)
 
-    local_tracks = get_local_tracks(playlist_folder)
+    organize_root_tracks(playlist_folder, playlist_tracks)
 
-    sync_playlist(local_tracks, playlist_tracks, playlist_folder)
+    sync_playlist(playlist_tracks, playlist_folder)
 
     print("\n=== PLAYLIST SYNC COMPLETE ===")
+
