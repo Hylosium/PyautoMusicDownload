@@ -14,6 +14,9 @@ BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
 # (old: /{playlist-name}/{title}.{output-ext})
 OUTPUT_TEMPLATE = "{artist}/{album}/{track-number} - {title}.{output-ext}"
 
+# Where to store single-track downloads (root folder)
+SINGLES_FOLDER_NAME = "Singles"
+
 # Audio extensions to consider
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".opus", ".ogg")
 
@@ -24,7 +27,7 @@ def _norm(s: str) -> str:
 
 
 # -------------------------------------------------
-# CLEAN SPOTIFY URL + EXTRACT PLAYLIST ID
+# CLEAN SPOTIFY URL + EXTRACT PLAYLIST / TRACK ID
 # -------------------------------------------------
 def extract_spotify_id(link: str) -> str:
     clean = link.split("?")[0].rstrip("/")
@@ -39,12 +42,19 @@ def extract_spotify_id(link: str) -> str:
     return clean.split("/")[-1]
 
 
-def clean_spotify_url(url):
-    return url.split("?")[0]  # consistently remove all params
+def clean_spotify_url(url: str) -> str:
+    # consistently remove all params (?si= etc.)
+    return url.split("?")[0]
 
 
-def safe_filename(name: str) -> str:
+def safe_filename(name) -> str:
     # Windows-safe filename (no <>:"/\|?* and no control chars)
+    # Accept None / non-strings (single-track case)
+    if not name:
+        name = "spotify"
+    else:
+        name = str(name)
+
     name = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", name)
     name = re.sub(r"\s+", " ", name).strip()
     return name[:180] or "spotify"
@@ -53,22 +63,21 @@ def safe_filename(name: str) -> str:
 # -------------------------------------------------
 # FETCH METADATA USING SPOTDL
 # -------------------------------------------------
-def fetch_metadata(playlist_url, playlist_id):
-    metadata_file = os.path.join(BASE_FOLDER, f"{safe_filename(playlist_id)}.spotdl")
+def fetch_metadata(spotify_url: str, spotify_id: str) -> str:
+    metadata_file = os.path.join(BASE_FOLDER, f"{safe_filename(spotify_id)}.spotdl")
 
     print("\nFetching playlist metadata…")
 
-    clean_url = playlist_url.split("?")[0]  # remove ?si etc.
-
+    clean_url = clean_spotify_url(spotify_url)
     command = f'spotdl save "{clean_url}" --save-file "{metadata_file}"'
 
     subprocess.run(command, shell=True)
 
-    time.sleep(1)
+    time.sleep(0.5)
 
     if not os.path.exists(metadata_file):
         print("Metadata file not created.")
-        exit()
+        raise SystemExit(1)
 
     return metadata_file
 
@@ -76,18 +85,24 @@ def fetch_metadata(playlist_url, playlist_id):
 # -------------------------------------------------
 # READ TRACKS FROM .spotdl FILE
 # -------------------------------------------------
-def load_playlist(path):
+def load_playlist(path: str):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    playlist_name = data[0]["list_name"]
+    # list_name exists for playlists, but is None / missing for single-track URLs
+    playlist_name = None
+    if data and isinstance(data, list) and isinstance(data[0], dict):
+        playlist_name = data[0].get("list_name")
+
+    is_playlist = bool(playlist_name)
 
     tracks = []
     for track in data:
-        title_l = _norm(track["name"])
-        artist_l = _norm(track["artists"][0])
+        title = track.get("name") or "Unknown Title"
+        artist = (track.get("artists") or ["Unknown Artist"])[0]
 
         album = track.get("album_name") or track.get("album") or "Unknown Album"
+
         track_number = track.get("track_number") or track.get("track-number") or 0
         try:
             track_number = int(track_number)
@@ -95,14 +110,14 @@ def load_playlist(path):
             track_number = 0
 
         tracks.append({
-            "raw": f"{title_l} {artist_l}",
-            "title": track["name"],
-            "artist": track["artists"][0],
+            "raw": f"{_norm(title)} {_norm(artist)}",
+            "title": title,
+            "artist": artist,
             "album": album,
             "track_number": track_number,
         })
 
-    return playlist_name, tracks
+    return playlist_name, tracks, is_playlist
 
 
 # -------------------------------------------------
@@ -179,7 +194,7 @@ def organize_root_tracks(playlist_folder, playlist_tracks):
         album_dir = _safe_name(t["album"])
 
         tn = t["track_number"]
-        tn_str = f"{tn:02d}" if tn > 0 else "00"
+        tn_str = f"{tn:02d}" if tn > 0 else "01"
 
         filename = _safe_name(f"{tn_str} - {t['title']}") + ext
 
@@ -274,20 +289,24 @@ def sync_playlist(playlist_tracks, folder):
 if __name__ == "__main__":
     playlist_url = input("Paste Spotify playlist link: ").strip()
 
-    playlist_id = extract_spotify_id(playlist_url)
-    metadata_file = fetch_metadata(playlist_url, playlist_id)
+    spotify_id = extract_spotify_id(playlist_url)
+    metadata_file = fetch_metadata(playlist_url, spotify_id)
 
-    playlist_name, playlist_tracks = load_playlist(metadata_file)
+    playlist_name, playlist_tracks, is_playlist = load_playlist(metadata_file)
 
-    playlist_folder = os.path.join(BASE_FOLDER, safe_filename(playlist_name))
+    # Root folder:
+    # - Playlists: <PlaylistName>/
+    # - Single tracks: Singles/
+    if is_playlist:
+        playlist_folder = os.path.join(BASE_FOLDER, safe_filename(playlist_name))
+    else:
+        playlist_folder = os.path.join(BASE_FOLDER, SINGLES_FOLDER_NAME)
 
     if not os.path.exists(playlist_folder):
         print(f"\nCreating folder: {playlist_folder}")
         os.makedirs(playlist_folder)
 
     organize_root_tracks(playlist_folder, playlist_tracks)
-
     sync_playlist(playlist_tracks, playlist_folder)
 
     print("\n=== PLAYLIST SYNC COMPLETE ===")
-

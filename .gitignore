@@ -1,13 +1,6 @@
-bengali.py
-hindi.py
-bhakti.py
-english.py
-/Bengali Songs
-/Bhakti Songs
-/English Songs
-/Hindi Songs
-bengali_songs.spotdl
-bhakti_songs.spotdl
-english_songs.spotdl
-hindi_songs.spotdl
-desktop.ini
+*/
+!README.md
+!main.py
+!requirements.txt
+!license.txt
+!.gitignore
