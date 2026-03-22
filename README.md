@@ -1,63 +1,91 @@
-Forked from the original https://github.com/Agnibha007/PyautoMusicDownload
-
 # PyautoMusicDownload
 
 Download and organize Spotify playlists or albums using **spotdl**, following **Plex music folder conventions**.
 
+*Forked from [Agnibha007/PyautoMusicDownload](https://github.com/Agnibha007/PyautoMusicDownload)*
+
 ## Requirements
 
-* Python 3.9+
-* ffmpeg
+* **Python 3.10 - 3.13** (Note: 3.14+ is currently unsupported by dependencies)
+* **FFmpeg** (For conversion and tagging)
+* **yt-dlp** (Handled via requirements.txt)
 
-Install **spotdl** (choose one):
+## Installation & Setup
 
-```bash
-pip install spotdl
+### Option 1: Virtual Environment (.venv)
+
+#### Windows
+```powershell
+# Create environment
+py -3.12 -m venv .venv
+
+# Activate environment
+.\.venv\Scripts\activate
+
+# Install requirements
+pip install -r requirements.txt
 ```
 
-or (recommended)
+#### Linux / macOS
+```bash
+# Create environment
+python3 -m venv .venv
+
+# Activate environment
+source .venv/bin/activate
+
+# Install requirements
+pip install -r requirements.txt
+```
+
+### Option 2: Using pipx
+If you prefer a global standalone installation of the dependencies:
 
 ```bash
-pipx install spotdl
+# Install the specific spotdl fork globally
+pipx install git+https://github.com/TzurSoffer/spotify-downloader.git
+
+# Ensure yt-dlp is available
+pipx inject spotdl yt-dlp
 ```
 
 ## Usage
 
+1. **Activate your environment** (if using .venv).
+- For linux:
 ```bash
-python main.py
+.venv\Scripts\activate
+```
+- For windows
+```bash
+.venv\Scripts\Activate.ps1
+```
+2. **Run the script**:
+   ```bash
+   python main.py
+   ```
+3. **Paste Link**: Provide a Spotify playlist, album, or track URL when prompted.
+
+**Note for Windows users:** Always run `chcp 65001` in your terminal before execution to ensure Unicode support for Japanese or accented titles.
+
+## Features
+
+* **Plex-compatible structure**: `Artist/Album/XX - Title.ext`
+* **Metadata fallback**: Automatically switches to direct download if metadata parsing fails.
+* **Smart Sync**: Detects existing files to skip duplicates.
+* **Unicode & Path Safety**: Handles special characters and Windows-reserved symbols.
+
+## Output Structure
+
+```text
+Music/
+└── Artist/
+    └── Album/
+        ├── 01 - Title.mp3
+        └── 02 - Title.mp3
 ```
 
-Paste a Spotify **playlist or album** link when prompted.
-
-The script will:
-
-* Fetch metadata
-* Organize existing files
-* Download only missing tracks
-
-## Output Structure (Plex-compatible)
-
-```
-Artist/
-└── Album/
-    ├── 01 - Title.ext
-```
-
-Follows Plex guidelines:
-[https://support.plex.tv/articles/200265296-adding-music-media-from-folders/](https://support.plex.tv/articles/200265296-adding-music-media-from-folders/)
-
-## Added Features
-
-* Automatic Artist/Album/Track structure
-* Reorganizes previously downloaded files
-* Avoids duplicate downloads
-* Unicode-safe (Japanese titles, accents)
-* Windows-safe filenames
-
-## Notes
-
-* Audio format is handled by spotdl
-* Duplicate detection is automatic
+Reference: [Plex Music Media Preparation](https://support.plex.tv/articles/200265296-adding-music-media-from-folders/)
 
 ## License
 
