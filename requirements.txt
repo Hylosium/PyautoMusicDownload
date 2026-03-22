@@ -1,1 +1,4 @@
-spotdl>=4.4.0
+# Using the TzurSoffer fork for better compatibility with current Spotify metadata
+git+https://github.com/TzurSoffer/spotify-downloader.git
+#spotdl>=4.4.0 #Do not use at the moment
+yt-dlp
